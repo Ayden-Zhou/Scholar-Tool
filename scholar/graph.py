@@ -8,9 +8,12 @@ graph_main.py: 基于 Semantic Scholar 的论文关系图谱生成器
 
 2. 图谱构建 (BFS 策略)：
    - 采用广度优先搜索，从种子节点逐层向外扩展。
-   - 支持两种模式：
+   - 支持三种模式：
      - references (溯源): 查找当前节点引用的论文 (箭头指向过去)。
      - citations (影响): 查找引用了当前节点的论文 (箭头指向未来/种子)。
+     - all (混合): 每个节点同时向 references 和 citations 两个方向扩展。
+       depth=2 时可发现 seed->ref->cite 和 seed->cite->ref 的混合路径，
+       从而挖掘"共引"(Co-citation) 和"耦合"(Bibliographic Coupling) 关系。
    - 每一层处理：
      - 针对当前节点，通过 API 获取关联论文列表。
      - 由于 API 默认不排序，代码请求 limit=1000 条数据到本地。
@@ -40,6 +43,7 @@ import networkx as nx
 from pyvis.network import Network
 import webbrowser
 import os
+from typing import List
 
 # 直接复用 utils.py 的基础工具
 from scholar.utils import search_paper, request_with_retry, fetch_relations, BASE_URL, safe_filename
@@ -88,13 +92,15 @@ class PaperGraph:
     def _get_relations(self, paper_id, relation_type, influential_only=True, 
                         since_year=None, until_year=None, fetch_limit=10000):
         """获取并缓存完整的 influential relations (references 或 citations)"""
-        cache_key = (paper_id, relation_type)
+        # 缓存键包含所有过滤参数，避免不同参数返回错误结果
+        cache_key = (paper_id, relation_type, influential_only, since_year, until_year)
         if cache_key not in self._cache:
             items, key = fetch_relations(
                 paper_id, relation_type, sort_by="citation", influential_only=influential_only,
                 since_year=since_year, until_year=until_year, fetch_limit=fetch_limit
             )
-            self._cache[cache_key] = [(item.get(key), True) for item in items]
+            # 保留原始的 isInfluential 值
+            self._cache[cache_key] = [(item.get(key), item.get("isInfluential", False)) for item in items]
         return self._cache[cache_key]
 
     def _add_edge(self, source, target, is_influential):
@@ -107,21 +113,22 @@ class PaperGraph:
         edge_width = 3 if is_influential else 1
         self.G.add_edge(source, target, color=edge_color, width=edge_width)
 
-    def build(self, start_title, mode="references", depth=2, width=5,
+    def build(self, start_title, mode="references", depth=2, width=(4, 2),
                influential_only=True, since_year=None, until_year=None, fetch_limit=10000):
         """
         构建图谱核心逻辑 (BFS + 内部连线补全)
-        :param mode: "references" | "citations" | "all"
-        :param depth: 搜索深度 (建议 2)
-        :param width: 每个节点延伸出多少个关键节点
+        :param width: 每层扩展的节点数。int 或 list/tuple (如 [4, 2] 表示第一层4个，第二层2个)
         """
+        # 规范化 width 为列表，处理 int 输入
+        widths = [width] if isinstance(width, int) else width
+        
         # 1. 搜索种子文章
         root_id, root_info_str = search_paper(start_title)
         if not root_id:
             return
         
         print(f"🌟 种子节点: {root_info_str}")
-        print(f"🕸️ 开始构建图谱 (深度: {depth}, 每点分支: {width}, 模式: {mode})...")
+        print(f"🕸️ 开始构建图谱 (深度: {depth}, 每层分支: {widths}, 模式: {mode})...")
 
         # 添加种子节点
         root_data = request_with_retry(f"{BASE_URL}/{root_id}", {"fields": "paperId,title,year,citationCount"})
@@ -132,23 +139,30 @@ class PaperGraph:
         self.add_node(root_data, layer=0)
         self.visited.add(root_id)
 
-        # 2. BFS 遍历 (mode="all" 时两个方向都跑)
-        modes = ["references", "citations"] if mode == "all" else [mode]
-        for m in modes:
-            queue = [(root_id, 0)]
-            while queue:
-                current_pid, current_depth = queue.pop(0)
+        # 2. BFS 遍历
+        # mode="all" 时，每个节点同时向 references 和 citations 两个方向扩展
+        # 这样 depth=2 可以发现 seed->ref->cite 和 seed->cite->ref 的混合路径
+        directions = ["references", "citations"] if mode == "all" else [mode]
+        queue = [(root_id, 0)]
+        
+        while queue:
+            current_pid, current_depth = queue.pop(0)
 
-                if current_depth >= depth:
-                    continue
+            if current_depth >= depth:
+                continue
 
-                print(f"   🔎 [{m}][L{current_depth}] {current_pid[:8]}...")
+            # 在当前节点，遍历所有需要探索的方向
+            for m in directions:
+                print(f"   🔎 [{m}][L{current_depth}->L{current_depth+1}] {current_pid[:8]}...")
                 
-                # 从完整缓存中取前 width 个
+                # 确定当前层的宽度 (如果层数超出列表长度，复用最后一个值)
+                cur_width = widths[min(current_depth, len(widths) - 1)]
+
+                # 从完整缓存中取前 cur_width 个
                 items = [(info, inf) for info, inf in self._get_relations(
                     current_pid, m, influential_only=influential_only,
                     since_year=since_year, until_year=until_year, fetch_limit=fetch_limit
-                )[:width] if info]
+                )[:cur_width] if info]
 
                 for p_info, is_influential in items:
                     if not p_info or not p_info.get('paperId'):
@@ -165,8 +179,8 @@ class PaperGraph:
                         self.visited.add(target_id)
                         if current_depth + 1 < depth:
                             queue.append((target_id, current_depth + 1))
-                
-                time.sleep(0.5)
+            
+            time.sleep(0.5)
 
         # 3. 补全内部连线 (使用完整缓存，不限 width)
         print(f"🔗 补全内部连线...")
@@ -204,7 +218,7 @@ class PaperGraph:
 def main(title: str = "Attention Is All You Need", 
         mode: str = "all", 
         depth: int = 2, 
-        width: int = 3,
+        width: List[int] = [4, 2],
         influential_only: bool = True, 
         since_year: int = None, 
         until_year: int = None,
@@ -218,7 +232,7 @@ def main(title: str = "Attention Is All You Need",
         title: 论文标题
         mode: references (参考文献) | citations (引用) | all (双向)
         depth: 搜索深度 (建议 2)
-        width: 每节点分支数
+        width: 每层分支数，int 或 list (如 [4, 2])
         influential_only: 是否只保留关键引用
         since_year: 筛选起始年份 (含)
         until_year: 筛选截止年份 (含)
