@@ -84,9 +84,10 @@ class PaperGraph:
 
         short_label = (title[:20] + '...') if len(title) > 20 else title
         tooltip = f"<b>{title}</b><br>Year: {year}<br>Citations: {citations}"
+        url = paper_info.get('url') or f"https://www.semanticscholar.org/paper/{pid}"
 
         self.G.add_node(pid, label=short_label, title=tooltip, 
-                        color=color, size=size, borderWidth=border_width)
+                        color=color, size=size, borderWidth=border_width, url=url)
         return True
 
     def _get_relations(self, paper_id, relation_type, influential_only=True, 
@@ -208,6 +209,25 @@ class PaperGraph:
         net.force_atlas_2based(gravity=-50, spring_length=100, spring_strength=0.08)
         
         net.save_graph(filename)
+
+        # 注入双击跳转功能
+        js_inject = """
+        <script type="text/javascript">
+            network.on("doubleClick", function(params) {
+                if (params.nodes.length > 0) {
+                    var node = network.body.data.nodes.get(params.nodes[0]);
+                    if (node.url) window.open(node.url, '_blank');
+                }
+            });
+        </script>
+        </body>"""
+
+        with open(filename, 'r+', encoding='utf-8') as f:
+            content = f.read()
+            f.seek(0)
+            f.write(content.replace('</body>', js_inject))
+            f.truncate()
+
         print(f"✅ 文件已生成: {filename}")
         try:
             webbrowser.open('file://' + os.path.realpath(filename))
