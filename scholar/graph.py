@@ -218,7 +218,7 @@ class PaperGraph:
 def main(title: str = "Attention Is All You Need", 
         mode: str = "all", 
         depth: int = 2, 
-        width: List[int] = [4, 2],
+        width: int | List[int] = [4, 2],
         influential_only: bool = True, 
         since_year: int = None, 
         until_year: int = None,
