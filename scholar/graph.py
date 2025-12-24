@@ -85,11 +85,15 @@ class PaperGraph:
                         color=color, size=size, borderWidth=border_width)
         return True
 
-    def _get_relations(self, paper_id, relation_type, influential_only=True, fetch_limit=10000):
+    def _get_relations(self, paper_id, relation_type, influential_only=True, 
+                        since_year=None, until_year=None, fetch_limit=10000):
         """获取并缓存完整的 influential relations (references 或 citations)"""
         cache_key = (paper_id, relation_type)
         if cache_key not in self._cache:
-            items, key = fetch_relations(paper_id, relation_type, sort_by="citation", influential_only=influential_only, fetch_limit=fetch_limit)
+            items, key = fetch_relations(
+                paper_id, relation_type, sort_by="citation", influential_only=influential_only,
+                since_year=since_year, until_year=until_year, fetch_limit=fetch_limit
+            )
             self._cache[cache_key] = [(item.get(key), True) for item in items]
         return self._cache[cache_key]
 
@@ -141,7 +145,10 @@ class PaperGraph:
                 print(f"   🔎 [{m}][L{current_depth}] {current_pid[:8]}...")
                 
                 # 从完整缓存中取前 width 个
-                items = [(info, inf) for info, inf in self._get_relations(current_pid, m, influential_only=influential_only, fetch_limit=fetch_limit)[:width] if info]
+                items = [(info, inf) for info, inf in self._get_relations(
+                    current_pid, m, influential_only=influential_only,
+                    since_year=since_year, until_year=until_year, fetch_limit=fetch_limit
+                )[:width] if info]
 
                 for p_info, is_influential in items:
                     if not p_info or not p_info.get('paperId'):
@@ -165,7 +172,10 @@ class PaperGraph:
         print(f"🔗 补全内部连线...")
         nodes = set(self.G.nodes())
         for pid in nodes:
-            for ref_info, is_influential in self._get_relations(pid, "references"):
+            for ref_info, is_influential in self._get_relations(
+                pid, "references", influential_only=influential_only,
+                since_year=since_year, until_year=until_year, fetch_limit=fetch_limit
+            ):
                 ref_id = ref_info.get('paperId') if ref_info else None
                 if ref_id in nodes:
                     self._add_edge(pid, ref_id, is_influential)
