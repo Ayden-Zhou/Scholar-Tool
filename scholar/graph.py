@@ -110,7 +110,14 @@ class PaperGraph:
             return
         if self.G.has_edge(source, target):
             return
-        edge_color = "#666666" if is_influential else "#dddddd"
+            
+        base_color = "#666666" if is_influential else "#dddddd"
+        # 设置边的颜色对象，指定高亮颜色为蓝色
+        edge_color = {
+            "color": base_color,
+            "highlight": "#0066ff"
+        }
+        
         edge_width = 3 if is_influential else 1
         self.G.add_edge(source, target, color=edge_color, width=edge_width)
 
