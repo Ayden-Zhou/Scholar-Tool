@@ -6,7 +6,7 @@ import requests
 BASE_URL = "https://api.semanticscholar.org/graph/v1/paper"
 
 
-def request_with_retry(url, params=None, max_retries=5):
+def request_with_retry(url, params=None, max_retries=10):
     """带重试机制的 GET 请求，自动处理 429 限流"""
     for i in range(max_retries):
         try:
@@ -40,26 +40,56 @@ def search_paper(title):
     return None, None
 
 
-def fetch_relations(paper_id, relation_type, sort_by="citation"):
+def sort_papers(papers, paper_key, strategy="citation"):
+    """
+    统一的论文排序逻辑 (多维排序，strategy 指定首要维度)
+    默认优先级: citation > influential > year
+    strategy: "citation" | "year" | "influential" (提升到第一位)
+    """
+    def key_fn(x):
+        p = x.get(paper_key) or {}
+        dims = {
+            "citation": p.get("citationCount") or 0,
+            "influential": bool(x.get("isInfluential")),
+            "year": p.get("year") or 0,
+        }
+        # 默认顺序，将 strategy 提升到首位
+        order = ["citation", "influential", "year"]
+        if strategy in order:
+            order.remove(strategy)
+            order.insert(0, strategy)
+        return tuple(dims[k] for k in order)
+    
+    papers.sort(key=key_fn, reverse=True)
+    return papers
+
+
+def fetch_relations(paper_id, relation_type, sort_by="citation", 
+                     influential_only=False, since_year=None, until_year=None, 
+                     num_results=None, fetch_limit=10000):
     """
     获取论文关系数据（citations 或 references）
     relation_type: "citations" | "references"
     sort_by: "citation" | "year" | "influential"
+    influential_only: 是否只返回有影响力的论文
+    since_year / until_year: 年份范围限制 (含边界)
+    num_results: 返回结果上限 (None 表示不限制)
+    fetch_limit: 从 API 获取的数据量上限 (默认 10000)
     """
     paper_key = "citingPaper" if relation_type == "citations" else "citedPaper"
-    fields = f"isInfluential,{paper_key}.title,{paper_key}.year,{paper_key}.citationCount"
+    fields = f"isInfluential,{paper_key}.paperId,{paper_key}.title,{paper_key}.year,{paper_key}.citationCount"
     
     print(f"📥 获取 {relation_type}...")
     results, offset = [], 0
     
-    while True:
+    while len(results) < fetch_limit:
         data = request_with_retry(
             f"{BASE_URL}/{paper_id}/{relation_type}",
             {"fields": fields, "offset": offset, "limit": 1000}
         )
-        if not data or "data" not in data:
+        batch = data.get("data") if data else None
+        if not batch:
             break
-        batch = data["data"]
         results.extend(batch)
         if len(batch) < 1000:
             break
@@ -67,13 +97,19 @@ def fetch_relations(paper_id, relation_type, sort_by="citation"):
         print(f"   已获取 {len(results)} 条...")
         time.sleep(1)
     
-    # 排序
-    sort_keys = {
-        "citation": lambda x: (x.get(paper_key) or {}).get("citationCount") or 0,
-        "year": lambda x: (x.get(paper_key) or {}).get("year") or 0,
-        "influential": lambda x: (x.get("isInfluential", False), (x.get(paper_key) or {}).get("citationCount") or 0),
-    }
-    results.sort(key=sort_keys.get(sort_by, sort_keys["citation"]), reverse=True)
+    # 过滤 + 排序 (filter 在前可减少排序开销)
+    def passes_filter(x):
+        if influential_only and not x.get("isInfluential"):
+            return False
+        year = (x.get(paper_key) or {}).get("year")
+        if since_year and (not year or year < since_year):
+            return False
+        if until_year and (not year or year > until_year):
+            return False
+        return True
+    
+    results = [x for x in results if passes_filter(x)]
+    results = sort_papers(results, paper_key, strategy=sort_by)[:num_results]
     
     print(f"📊 共 {len(results)} 条")
     return results, paper_key
@@ -93,7 +129,6 @@ def save_to_csv(data, paper_key, output_path):
                 "title": p.get("title", "Unknown")
             })
     print(f"✅ 已保存到 {output_path}")
-
 
 
 def safe_filename(title):
