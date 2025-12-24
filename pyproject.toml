@@ -12,6 +12,7 @@ dependencies = [
     "fire",
     "networkx",
     "pyvis",
+    "sortgs",
 ]
 
 [project.scripts]
