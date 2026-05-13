@@ -2,6 +2,7 @@
 import csv
 import time
 import requests
+from urllib.parse import quote
 
 BASE_URL = "https://api.semanticscholar.org/graph/v1/paper"
 
@@ -81,6 +82,7 @@ def fetch_relations(paper_id, relation_type, sort_by="citation",
     
     print(f"📥 获取 {relation_type}...")
     results, offset = [], 0
+    paper_id = quote(str(paper_id), safe="")
     
     while len(results) < fetch_limit:
         data = request_with_retry(
